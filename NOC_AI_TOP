@@ -1,0 +1,212 @@
+module ai_accelerator ( input clk,
+input rst_n,
+input [127:0] data_in,	// 128-bit activations (same for all PEs) input [127:0] weights_in,		// 128-bit weights (32 bits per PE) input start,
+input valid_in,
+output [255:0] result,	// 256-bit output (4 × 64 bits) output reg done,
+output reg valid_out
+);
+wire [127:0] router_data_out [0:3];
+wire [31:0] router_weights_out [0:3];
+wire [3:0] valid_out_router;
+
+
+reg [127:0] router_data_in [0:3];
+reg [31:0] router_weights_in [0:3];
+reg [3:0] valid_in_router;
+reg [1:0] dest_xy_reg [0:3];
+
+
+reg [127:0] pe_data_in [0:3];
+reg [31:0] pe_weights [0:3];
+wire [63:0] pe_result [0:3];
+reg [3:0] pe_start;
+wire [3:0] pe_done;
+reg [2:0] state;
+localparam IDLE = 0, LOAD = 1, COMPUTE = 2, STORE = 3;
+integer p;
+reg [255:0] result_reg; // 256 bits
+reg [3:0] pe_done_packed;
+reg [1:0] compute_count;
+
+
+// Router instantiations noc_router u_router_0 (
+.clk(clk),
+.rst_n(rst_n),
+.data_in(router_data_in[0]),
+.weights_in(router_weights_in[0]),
+.src_xy(2'b00),
+.dest_xy(dest_xy_reg[0]),
+.valid_in(valid_in_router[0]),
+.data_out(router_data_out[0]),
+.weights_out(router_weights_out[0]),
+.valid_out(valid_out_router[0])
+);
+
+noc_router u_router_1 (
+.clk(clk),
+.rst_n(rst_n),
+.data_in(router_data_in[1]),
+.weights_in(router_weights_in[1]),
+.src_xy(2'b01),
+.dest_xy(dest_xy_reg[1]),
+.valid_in(valid_in_router[1]),
+.data_out(router_data_out[1]),
+.weights_out(router_weights_out[1]),
+.valid_out(valid_out_router[1])
+);
+
+
+noc_router u_router_2 (
+.clk(clk),
+.rst_n(rst_n),
+.data_in(router_data_in[2]),
+.weights_in(router_weights_in[2]),
+.src_xy(2'b10),
+.dest_xy(dest_xy_reg[2]),
+.valid_in(valid_in_router[2]),
+.data_out(router_data_out[2]),
+.weights_out(router_weights_out[2]),
+.valid_out(valid_out_router[2])
+);
+
+
+noc_router u_router_3 (
+.clk(clk),
+.rst_n(rst_n),
+.data_in(router_data_in[3]),
+.weights_in(router_weights_in[3]),
+.src_xy(2'b11),
+.dest_xy(dest_xy_reg[3]),
+.valid_in(valid_in_router[3]),
+.data_out(router_data_out[3]),
+.weights_out(router_weights_out[3]),
+.valid_out(valid_out_router[3])
+);
+
+
+// PE instantiations
+pe u_pe_0 (.clk(clk), .rst_n(rst_n), .data_in(pe_data_in[0]),
+.weights(pe_weights[0]), .start(pe_start[0]), .result(pe_result[0]), .done(pe_done[0]));
+pe u_pe_1 (.clk(clk), .rst_n(rst_n), .data_in(pe_data_in[1]),
+.weights(pe_weights[1]), .start(pe_start[1]), .result(pe_result[1]), .done(pe_done[1]));
+pe u_pe_2 (.clk(clk), .rst_n(rst_n), .data_in(pe_data_in[2]),
+.weights(pe_weights[2]), .start(pe_start[2]), .result(pe_result[2]), .done(pe_done[2]));
+pe u_pe_3 (.clk(clk), .rst_n(rst_n), .data_in(pe_data_in[3]),
+.weights(pe_weights[3]), .start(pe_start[3]), .result(pe_result[3]), .done(pe_done[3]));
+
+
+// Router to PE connections
+
+always @(posedge clk or negedge rst_n) begin if (!rst_n) begin
+for (p = 0; p < 4; p = p + 1) begin pe_data_in[p] <= 128'b0; pe_weights[p] <= 32'b0;
+end
+end else begin
+if (valid_out_router[0]) begin
+pe_data_in[0] <= router_data_out[0]; // Full 128-bit data from router pe_weights[0] <= router_weights_out[0];
+end
+if (valid_out_router[1]) begin pe_data_in[1] <= router_data_out[1]; pe_weights[1] <= router_weights_out[1];
+end
+if (valid_out_router[2]) begin pe_data_in[2] <= router_data_out[2]; pe_weights[2] <= router_weights_out[2];
+end
+if (valid_out_router[3]) begin pe_data_in[3] <= router_data_out[3]; pe_weights[3] <= router_weights_out[3];
+end end
+end
+// Main control logic
+always @(posedge clk or negedge rst_n) begin if (!rst_n) begin
+state <= IDLE; done <= 0;
+valid_out <= 0; pe_start <= 4'b0; result_reg <= 256'b0; compute_count <= 0;
+for (p = 0; p < 4; p = p + 1) begin router_data_in[p] <= 128'b0; router_weights_in[p] <= 32'b0; valid_in_router[p] <= 1'b0; dest_xy_reg[p] <= 2'b00;
+end
+end else begin case (state)
+IDLE: begin done <= 0;
+valid_out <= 0; pe_start <= 4'b0; compute_count <= 0;
+if (start && valid_in) state <= LOAD;
+end
+LOAD: begin
+// Feed full data_in and unique weights to routers router_data_in[0] <= data_in;
+router_weights_in[0] <= {weights_in[103:96], weights_in[71:64], weights_in[39:32], weights_in[7:0]};
+router_data_in[1] <= data_in;
+router_weights_in[1] <= {weights_in[111:104], weights_in[79:72], weights_in[47:40], weights_in[15:8]};
+router_data_in[2] <= data_in;
+router_weights_in[2] <= {weights_in[119:112], weights_in[87:80], weights_in[55:48], weights_in[23:16]};
+router_data_in[3] <= data_in;
+router_weights_in[3] <= {weights_in[127:120], weights_in[95:88], weights_in[63:56], weights_in[31:24]};
+valid_in_router <= 4'b1111; dest_xy_reg[0] <= 2'b00; // Local delivery dest_xy_reg[1] <= 2'b01;
+dest_xy_reg[2] <= 2'b10; dest_xy_reg[3] <= 2'b11; state <= COMPUTE;
+end
+COMPUTE: begin pe_start <= 4'b1111;
+pe_done_packed <= {pe_done[3], pe_done[2], pe_done[1], pe_done[0]}; if (&pe_done_packed) begin
+pe_start <= 4'b0000;
+
+for (p = 0; p < 4; p = p + 1) begin
+result_reg[p*64 +: 64] <= pe_result[p]; // Full 64 bits per
+PE
+end
+done <= 1;
+valid_out <= 1; state <= IDLE;
+end end
+endcase end
+end
+
+
+assign result = result_reg; endmodule
+noc_router :-
+module noc_router( input clk,
+input rst_n,
+input [127:0] data_in,
+input [31:0] weights_in,
+input [1:0] src_xy,
+input [1:0] dest_xy, input valid_in,
+output reg [127:0] data_out,
+
+output reg [31:0] weights_out, output reg valid_out
+);
+always @(posedge clk or negedge rst_n) begin if (!rst_n) begin
+data_out <= 128'b0; weights_out <= 32'b0; valid_out <= 0;
+end else begin
+if (valid_in && src_xy == dest_xy) begin data_out <= data_in;
+weights_out <= weights_in; valid_out <= 1;
+end else begin valid_out <= 0;
+end end
+end
+endmodule
+processing element:-
+module pe( input clk, input rst_n,
+input [127:0] data_in,
+input [31:0] weights,
+input start,
+output reg [63:0] result, output reg done
+);
+reg [15:0] temp0, temp1, temp2, temp3; reg [1:0] compute_stage;
+reg processing;
+
+
+
+always @(posedge clk or negedge rst_n) begin if (!rst_n) begin
+result <= 64'b0; done <= 0; temp0 <= 16'b0; temp1 <= 16'b0; temp2 <= 16'b0; temp3 <= 16'b0;
+compute_stage <= 2'b00; processing <= 0;
+end else begin
+if (start && !processing) begin processing <= 1; compute_stage <= 2'b01; done <= 0;
+end
+
+if (processing) begin case (compute_stage)
+
+2'b01: begin
+result[15:0] <= data_in[7:0] * weights[7:0] + data_in[15:8] * weights[15:8] + data_in[23:16] * weights[23:16] + data_in[31:24] * weights[31:24];
+result[31:16] <= data_in[39:32] * weights[7:0] + data_in[47:40]
+* weights[15:8] + data_in[55:48] * weights[23:16] + data_in[63:56] * weights[31:24];
+result[47:32] <= data_in[71:64] * weights[7:0] + data_in[79:72]
+* weights[15:8] + data_in[87:80] * weights[23:16] + data_in[95:88] * weights[31:24];
+result[63:48] <= data_in[103:96] * weights[7:0] + data_in[111:104] * weights[15:8] + data_in[119:112] * weights[23:16] + data_in[127:120] * weights[31:24];
+done <= 1;
+processing <= 0;
+
+
+end
+
+
+endcase end else begin
+done <= 0; end
+end
+
+end endmodule
