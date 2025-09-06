@@ -1,0 +1,142 @@
+
+//`timescale 1ns / 1ps
+`include "../rtl/axi4_lite_master.sv"
+`include "../rtl/axi4_lite_slave.sv"
+`include "../rtl/axi4_lite_top.sv"
+
+
+module axi4_lite_tb;
+
+
+// Parameters
+localparam CLK_PERIOD = 10;
+
+
+// Signals reg	clk;
+reg	reset_n;
+reg	write_en;
+reg	read_en;
+reg [31:0] write_data_in;
+reg [31:0] write_addr_in;
+reg [31:0] read_addr_in;
+reg [3:0] strobe_in;
+wire [31:0] read_data_out;
+wire [1:0] write_response_out;
+wire [1:0] read_response_out; wire	write_done;
+wire	read_done;
+
+// DUT Instantiation axi4_lite_top dut (
+.clk	(clk),
+.reset_n	(reset_n),
+.write_en	(write_en),
+.read_en	(read_en),
+.write_data_in	(write_data_in),
+.write_addr_in	(write_addr_in),
+.read_addr_in	(read_addr_in),
+.strobe_in	(strobe_in),
+.read_data_out	(read_data_out),
+.write_response_out (write_response_out),
+.read_response_out (read_response_out),
+.write_done	(write_done),
+.read_done	(read_done)
+);
+
+
+// Clock Generation initial begin
+clk = 0;
+forever #(CLK_PERIOD/2) clk = ~clk; end
+
+// Test Procedure initial begin
+// Initialize reset_n = 0;
+write_en = 0;
+
+
+read_en = 0;
+write_data_in = 0;
+write_addr_in = 0;
+read_addr_in = 0;
+strobe_in = 0;
+#20;
+reset_n = 1;
+#20;
+
+
+// Test 1: Reset Behavior
+$display("\nTest 1: Reset Behavior"); #10;
+if (read_data_out != 0 || write_response_out != 0 || read_response_out != 0 || write_done != 0 || read_done != 0)
+$display("ERROR: Outputs not reset"); else
+$display("Reset OK");
+
+
+// Test 2: Random Write
+$display("\nTest 2: Random Write"); write_en = 1;
+write_data_in = 32'hABCD_1234; write_addr_in = 32'h0000_0004; strobe_in = 4'b1111;
+#10;
+write_en = 0;
+wait (write_done);
+$display("Write Response=%b (Expected 00)", write_response_out); if (write_response_out != 2'b00) $display("ERROR: Write failed");
+
+// #20; #(CLK_PERIOD); #(CLK_PERIOD);
+//test 3 : MUltiple writes write_en = 1;
+write_data_in = 32'hABCD; write_addr_in = 32'h0000_000C; strobe_in = 4'b1111;
+#10;
+write_en = 0;
+wait (write_done);
+$display("Write Response=%b ", write_response_out);
+//#20; #(CLK_PERIOD); #(CLK_PERIOD);
+write_en = 1; write_data_in = 32'hEF10;
+write_addr_in = 32'h0000_0008; strobe_in = 4'b1111;
+#10;
+write_en = 0;
+wait (write_done);
+$display("Write Response=%b ", write_response_out);
+
+//$display("Write Response=%b (Expected 00)", write_response_out);
+//if (write_response_out != 2'b00) $display("ERROR: Write failed");
+
+
+// Test 3: Random Read #20;
+$display("\nTest 3: Random Read"); read_en = 1;
+read_addr_in = 32'h0000_0004; #10;
+read_en = 0;
+wait (read_done);
+$display("Read Data=%h (Expected ABCD1234), Read Response=%b (Expected 00)", read_data_out, read_response_out);
+if (read_data_out != 32'hABCD_1234 || read_response_out != 2'b00)
+$display("ERROR: Read failed");
+
+
+// Test 4: Write with Strobes #20;
+$display("\nTest 4: Write with Strobes"); write_en = 1;
+write_data_in = 32'hCAFE_BADD; write_addr_in = 32'h0000_0008; strobe_in = 4'b0011;
+#10;
+write_en = 0;
+wait (write_done);
+$display("Write Response=%b (Expected 00)", write_response_out); if (write_response_out != 2'b00) $display("ERROR: Write failed");
+
+// Test 5: Read to Verify Strobes
+#20;
+$display("\nTest 5: Read to Verify Strobes"); read_en = 1;
+read_addr_in = 32'h0000_0008; #10;
+read_en = 0;
+wait (read_done);
+$display("Read Data=%h (Expected 0000BADD), Read Response=%b (Expected 00)", read_data_out, read_response_out);
+if (read_data_out[15:0] != 16'hFBADD || read_response_out != 2'b00)
+$display("ERROR: Strobe write/read failed");
+
+
+// Test 6: Error Response #20;
+$display("\nTest 6: Error Response"); write_en = 1;
+write_data_in = 32'hFFFF_FFFF; write_addr_in = 32'h0000_0400; strobe_in = 4'b1111;
+#10;
+write_en = 0;
+wait (write_done);
+$display("Write Response=%b (Expected 10)", write_response_out); if (write_response_out != 2'b10)
+$display("ERROR: Expected SLVERR not detected");
+
+
+// Finish #100;
+$display("Simulation Complete");
+$finish; end
+
+endmodule
+
